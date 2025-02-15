@@ -8,28 +8,71 @@
     <link href="static/css/xterm.min.css" rel="stylesheet" type="text/css"/>
     <link href="static/css/fullscreen.min.css" rel="stylesheet" type="text/css"/>
     <style>
+      /* 基本布局调整 */
+      body {
+        background-color: #121212;
+        color: #e0e0e0;
+        font-family: Arial, sans-serif;
+      }
+
+      .container {
+        background-color: #1e1e1e;
+        border-radius: 5px;
+        padding: 20px;
+        margin-top: 20px;
+      }
+
       .row {
         margin-top: 15px;
         margin-bottom: 10px;
       }
 
-      .container {
-        margin-top: 20px;
+      /* 输入框样式 */
+      .form-control {
+        background-color: #2e2e2e;
+        color: #e0e0e0;
+        border: 1px solid #555;
       }
 
+      .form-control:focus {
+        background-color: #3e3e3e;
+        color: #fff;
+        border-color: #888;
+        box-shadow: none;
+      }
+
+      /* 按钮样式 */
       .btn {
         margin-top: 15px;
       }
 
+      .btn-primary {
+        background-color: #007bff;
+        border-color: #007bff;
+      }
+
       .btn-danger {
+        background-color: #dc3545;
+        border-color: #dc3545;
         margin-left: 5px;
       }
+
+      .btn-info {
+        background-color: #17a2b8;
+        border-color: #17a2b8;
+      }
+
+      /* 调整链接颜色 */
+      a {
+        color: #1e90ff;
+      }
+
+      /* 如果有自定义字体 */
       {% if font.family %}
       @font-face {
         font-family: '{{ font.family }}';
         src: url('{{ font.url }}');
       }
-
       body {
         font-family: '{{ font.family }}';
       }
@@ -93,7 +136,7 @@
     </div>
 
     <div class="container">
-      <div id="status" style="color: red;"></div>
+      <div id="status" style="color: #dc3545;"></div>
       <div id="terminal"></div>
     </div>
 
