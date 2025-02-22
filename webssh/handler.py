@@ -99,6 +99,13 @@ class SSHClient(paramiko.SSHClient):
         assert saved_exception is not None
         raise saved_exception
 
+    def connect(self, *args, **kwargs):
+        # 重写 connect 方法，添加 keepalive
+        super(SSHClient, self).connect(*args, **kwargs)
+        transport = self.get_transport()
+        transport.set_keepalive(30)  # 每 30 秒发送一次保持活动消息
+        logging.info("SSH keepalive set to 30 seconds")
+
 
 class PrivateKey(object):
 
@@ -117,7 +124,6 @@ class PrivateKey(object):
         self.password = password
         self.check_length()
         self.iostr = io.StringIO(privatekey)
-        self.last_exception = None
 
     def check_length(self):
         if len(self.privatekey) > self.max_length:
@@ -251,7 +257,6 @@ class MixinHandler(object):
             if redirecting and not is_ip_hostname(hostname):
                 ip_address = to_ip_address(ip)
                 if not ip_address.is_private:
-                    # redirecting
                     return False
 
             if options.fbidhttp:
@@ -292,12 +297,10 @@ class MixinHandler(object):
         elif ip in self.request.headers.get('X-Forwarded-For', ''):
             port = self.request.headers.get('X-Forwarded-Port')
         else:
-            # not running behind an nginx server
             return
 
         port = to_int(port)
         if port is None or not is_valid_port(port):
-            # fake port
             port = 65535
 
         return (ip, port)
@@ -350,12 +353,10 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         name = 'privatekey'
         lst = self.request.files.get(name)
         if lst:
-            # multipart form
             filename = lst[0]['filename']
             data = lst[0]['body']
             value = self.decode_argument(data, name=name).strip()
         else:
-            # urlencoded form
             value = self.get_argument(name, u'')
             filename = ''
 
@@ -453,6 +454,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
         try:
             ssh.connect(*args, timeout=options.timeout)
+            logging.info("SSH connection established with keepalive")
         except socket.error:
             raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
         except paramiko.BadAuthenticationType:
@@ -493,7 +495,6 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     @tornado.gen.coroutine
     def post(self):
         if self.debug and self.get_argument('error', u''):
-            # for testing purpose only
             raise ValueError('Uncaught exception')
 
         ip, port = self.get_client_addr()
@@ -531,6 +532,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
     def initialize(self, loop):
         super(WsockHandler, self).initialize(loop)
         self.worker_ref = None
+        self.ping_task = None  # 用于心跳定时器
 
     def open(self):
         self.src_addr = self.get_client_addr()
@@ -549,55 +551,4 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             worker = workers.get(worker_id)
             if worker:
                 workers[worker_id] = None
-                self.set_nodelay(True)
-                worker.set_handler(self)
-                self.worker_ref = weakref.ref(worker)
-                self.loop.add_handler(worker.fd, worker, IOLoop.READ)
-            else:
-                self.close(reason='Websocket authentication failed.')
-
-    def on_message(self, message):
-        logging.debug('{!r} from {}:{}'.format(message, *self.src_addr))
-        worker = self.worker_ref()
-        if not worker:
-            # The worker has likely been closed. Do not process.
-            logging.debug(
-                "received message to closed worker from {}:{}".format(
-                    *self.src_addr
-                )
-            )
-            self.close(reason='No worker found')
-            return
-
-        if worker.closed:
-            self.close(reason='Worker closed')
-            return
-
-        try:
-            msg = json.loads(message)
-        except JSONDecodeError:
-            return
-
-        if not isinstance(msg, dict):
-            return
-
-        resize = msg.get('resize')
-        if resize and len(resize) == 2:
-            try:
-                worker.chan.resize_pty(*resize)
-            except (TypeError, struct.error, paramiko.SSHException):
-                pass
-
-        data = msg.get('data')
-        if data and isinstance(data, UnicodeType):
-            worker.data_to_dst.append(data)
-            worker.on_write()
-
-    def on_close(self):
-        logging.info('Disconnected from {}:{}'.format(*self.src_addr))
-        if not self.close_reason:
-            self.close_reason = 'client disconnected'
-
-        worker = self.worker_ref() if self.worker_ref else None
-        if worker:
-            worker.close(reason=self.close_reason)
+                self.set_nodelay(True)​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
