@@ -7,6 +7,7 @@ import traceback
 import weakref
 import paramiko
 import tornado.web
+import time
 
 from concurrent.futures import ThreadPoolExecutor
 from tornado.ioloop import IOLoop
@@ -100,16 +101,15 @@ class SSHClient(paramiko.SSHClient):
         raise saved_exception
 
     def connect(self, *args, **kwargs):
-        # 重写 connect 方法，添加 keepalive
         super(SSHClient, self).connect(*args, **kwargs)
         transport = self.get_transport()
-        transport.set_keepalive(30)  # 每 30 秒发送一次保持活动消息
+        transport.set_keepalive(30)
         logging.info("SSH keepalive set to 30 seconds")
 
 
 class PrivateKey(object):
 
-    max_length = 16384  # rough number
+    max_length = 16384
 
     tag_to_name = {
         'RSA': 'RSA',
@@ -447,45 +447,45 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         logging.warning('Could not detect the default encoding.')
         return 'utf-8'
 
-      def ssh_connect(self, args):
-      ssh = self.ssh_client
-      dst_addr = args[:2]
-      max_retries = 3  # 最大重试次数
-      retry_delay = 2  # 每次重试前的等待时间（秒）
-      timeout = options.timeout if options.timeout else 10  # 默认超时 10 秒
+    def ssh_connect(self, args):
+        ssh = self.ssh_client
+        dst_addr = args[:2]
+        max_retries = 3
+        retry_delay = 2
+        timeout = options.timeout if options.timeout else 10
 
-      logging.info('Connecting to {}:{}'.format(*dst_addr))
+        logging.info('Connecting to {}:{}'.format(*dst_addr))
 
-      for attempt in range(max_retries):
-          try:
-              ssh.connect(*args, timeout=timeout)
-              logging.info("SSH connection established with keepalive on attempt {}".format(attempt + 1))
-              break  # 连接成功，退出循环
-          except (socket.error, paramiko.SSHException) as exc:
-              if attempt < max_retries - 1:  # 不是最后一次尝试
-                  logging.warning("Connection attempt {}/{} failed: {}. Retrying in {} seconds...".format(
-                      attempt + 1, max_retries, str(exc), retry_delay))
-                  tornado.ioloop.IOLoop.current().run_sync(lambda: tornado.gen.sleep(retry_delay))
-              else:
-                  logging.error("All {} connection attempts failed: {}".format(max_retries, str(exc)))
-                  if isinstance(exc, socket.error):
-                      raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
-                  elif isinstance(exc, paramiko.BadAuthenticationType):
-                      raise ValueError('Bad authentication type.')
-                  elif isinstance(exc, paramiko.AuthenticationException):
-                      raise ValueError('Authentication failed.')
-                  elif isinstance(exc, paramiko.BadHostKeyException):
-                      raise ValueError('Bad host key.')
-                  else:
-                      raise ValueError('Connection failed: {}'.format(str(exc)))
+        for attempt in range(max_retries):
+            try:
+                ssh.connect(*args, timeout=timeout)
+                logging.info("SSH connection established with keepalive on attempt {}".format(attempt + 1))
+                break
+            except (socket.error, paramiko.SSHException) as exc:
+                if attempt < max_retries - 1:
+                    logging.warning("Connection attempt {}/{} failed: {}. Retrying in {} seconds...".format(
+                        attempt + 1, max_retries, str(exc), retry_delay))
+                    time.sleep(retry_delay)
+                else:
+                    logging.error("All {} connection attempts failed: {}".format(max_retries, str(exc)))
+                    if isinstance(exc, socket.error):
+                        raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
+                    elif isinstance(exc, paramiko.BadAuthenticationType):
+                        raise ValueError('Bad authentication type.')
+                    elif isinstance(exc, paramiko.AuthenticationException):
+                        raise ValueError('Authentication failed.')
+                    elif isinstance(exc, paramiko.BadHostKeyException):
+                        raise ValueError('Bad host key.')
+                    else:
+                        raise ValueError('Connection failed: {}'.format(str(exc)))
 
-      term = self.get_argument('term', u'') or u'xterm'
-      chan = ssh.invoke_shell(term=term)
-      chan.setblocking(0)
-      worker = Worker(self.loop, ssh, chan, dst_addr)
-      worker.encoding = options.encoding if options.encoding else \
-          self.get_default_encoding(ssh)
-      return worker
+        term = self.get_argument('term', u'') or u'xterm'
+        chan = ssh.invoke_shell(term=term)
+        chan.setblocking(0)
+        worker = Worker(self.loop, ssh, chan, dst_addr)
+        worker.encoding = options.encoding if options.encoding else \
+            self.get_default_encoding(ssh)
+        return worker
 
     def check_origin(self):
         event_origin = self.get_argument('_origin', u'')
@@ -547,7 +547,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
     def initialize(self, loop):
         super(WsockHandler, self).initialize(loop)
         self.worker_ref = None
-        self.ping_task = None  # 用于心跳定时器
+        self.ping_task = None
 
     def open(self):
         self.src_addr = self.get_client_addr()
@@ -566,4 +566,65 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             worker = workers.get(worker_id)
             if worker:
                 workers[worker_id] = None
-                self.set_nodelay(True)​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​​
+                self.set_nodelay(True)
+                worker.set_handler(self)
+                self.worker_ref = weakref.ref(worker)
+                self.loop.add_handler(worker.fd, worker, IOLoop.READ)
+                self.ping_task = tornado.ioloop.PeriodicCallback(self.send_ping, 30000)
+                self.ping_task.start()
+            else:
+                self.close(reason='Websocket authentication failed.')
+
+    def send_ping(self):
+        try:
+            self.ping(b"ping")
+            logging.debug("Sent ping to {}:{}".format(*self.src_addr))
+        except tornado.websocket.WebSocketClosedError:
+            self.close(reason='Ping failed, connection closed')
+
+    def on_message(self, message):
+        logging.debug('{!r} from {}:{}'.format(message, *self.src_addr))
+        worker = self.worker_ref()
+        if not worker:
+            logging.debug(
+                "received message to closed worker from {}:{}".format(
+                    *self.src_addr
+                )
+            )
+            self.close(reason='No worker found')
+            return
+
+        if worker.closed:
+            self.close(reason='Worker closed')
+            return
+
+        try:
+            msg = json.loads(message)
+        except JSONDecodeError:
+            return
+
+        if not isinstance(msg, dict):
+            return
+
+        resize = msg.get('resize')
+        if resize and len(resize) == 2:
+            try:
+                worker.chan.resize_pty(*resize)
+            except (TypeError, struct.error, paramiko.SSHException):
+                pass
+
+        data = msg.get('data')
+        if data and isinstance(data, UnicodeType):
+            worker.data_to_dst.append(data)
+            worker.on_write()
+
+    def on_close(self):
+        logging.info('Disconnected from {}:{}'.format(*self.src_addr))
+        if not self.close_reason:
+            self.close_reason = 'client disconnected'
+        if self.ping_task:
+            self.ping_task.stop()
+        worker = self.worker_ref() if self.worker_ref else None
+        if worker:
+            self.loop.remove_handler(worker.fd)
+            worker.close()
