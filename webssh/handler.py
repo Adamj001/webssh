@@ -447,30 +447,45 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         logging.warning('Could not detect the default encoding.')
         return 'utf-8'
 
-    def ssh_connect(self, args):
-        ssh = self.ssh_client
-        dst_addr = args[:2]
-        logging.info('Connecting to {}:{}'.format(*dst_addr))
+      def ssh_connect(self, args):
+      ssh = self.ssh_client
+      dst_addr = args[:2]
+      max_retries = 3  # 最大重试次数
+      retry_delay = 2  # 每次重试前的等待时间（秒）
+      timeout = options.timeout if options.timeout else 10  # 默认超时 10 秒
 
-        try:
-            ssh.connect(*args, timeout=options.timeout)
-            logging.info("SSH connection established with keepalive")
-        except socket.error:
-            raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
-        except paramiko.BadAuthenticationType:
-            raise ValueError('Bad authentication type.')
-        except paramiko.AuthenticationException:
-            raise ValueError('Authentication failed.')
-        except paramiko.BadHostKeyException:
-            raise ValueError('Bad host key.')
+      logging.info('Connecting to {}:{}'.format(*dst_addr))
 
-        term = self.get_argument('term', u'') or u'xterm'
-        chan = ssh.invoke_shell(term=term)
-        chan.setblocking(0)
-        worker = Worker(self.loop, ssh, chan, dst_addr)
-        worker.encoding = options.encoding if options.encoding else \
-            self.get_default_encoding(ssh)
-        return worker
+      for attempt in range(max_retries):
+          try:
+              ssh.connect(*args, timeout=timeout)
+              logging.info("SSH connection established with keepalive on attempt {}".format(attempt + 1))
+              break  # 连接成功，退出循环
+          except (socket.error, paramiko.SSHException) as exc:
+              if attempt < max_retries - 1:  # 不是最后一次尝试
+                  logging.warning("Connection attempt {}/{} failed: {}. Retrying in {} seconds...".format(
+                      attempt + 1, max_retries, str(exc), retry_delay))
+                  tornado.ioloop.IOLoop.current().run_sync(lambda: tornado.gen.sleep(retry_delay))
+              else:
+                  logging.error("All {} connection attempts failed: {}".format(max_retries, str(exc)))
+                  if isinstance(exc, socket.error):
+                      raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
+                  elif isinstance(exc, paramiko.BadAuthenticationType):
+                      raise ValueError('Bad authentication type.')
+                  elif isinstance(exc, paramiko.AuthenticationException):
+                      raise ValueError('Authentication failed.')
+                  elif isinstance(exc, paramiko.BadHostKeyException):
+                      raise ValueError('Bad host key.')
+                  else:
+                      raise ValueError('Connection failed: {}'.format(str(exc)))
+
+      term = self.get_argument('term', u'') or u'xterm'
+      chan = ssh.invoke_shell(term=term)
+      chan.setblocking(0)
+      worker = Worker(self.loop, ssh, chan, dst_addr)
+      worker.encoding = options.encoding if options.encoding else \
+          self.get_default_encoding(ssh)
+      return worker
 
     def check_origin(self):
         event_origin = self.get_argument('_origin', u'')
