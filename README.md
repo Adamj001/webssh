@@ -1,4 +1,12 @@
-## 我的修改
+
+最新改进：
+
+1. 提升首次一次连通率，不需要多次重复提交连接申请
+2. 延长登陆后，空闲时间很短就推出的问题，可以保持登录。
+3. 改成黑色背景
+   <img width="1034" alt="image" src="https://github.com/user-attachments/assets/c714541d-f769-4a84-a894-4e220422614e" />
+
+5. ## 我的修改
 增加生成SSH Link功能，方便收藏，下次使用不需要输入密码。
 ![image](https://github.com/crazypeace/huashengdun-webssh/assets/665889/123a33bd-9514-46a5-8e64-d7a82b7f6f19)
 
